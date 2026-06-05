@@ -88,13 +88,87 @@ const SENT_ROWS = [
   { label:'VVIX',                   value:'97.4',  level:'green' as const, note:'100 altı normal',         verified:true  },
 ]
 
-// ── Data fetch ────────────────────────────────────────────────
+// ── Data fetch — birbaşa funksiya çağırışı (HTTP self-call yox) ──
+import { getQuote, getHistoricalPrices } from '@/lib/fmp'
+import {
+  calcWeinstein, calcMansfield,
+  calcTrend, calcMomentum, calcBreadth, calcEarnings,
+  calcSector, calcSentiment, calcOpex, calcHealthScore,
+  calcRSI, calcMACDHist,
+  type IndexData,
+} from '@/lib/calculations'
+
+const INDEX_TICKERS  = ['SPY', 'RSP', 'QQQ', 'QQQE', 'DIA', 'IWM']
+const SECTOR_TICKERS = ['SMH', 'IGV', 'XBI', 'XLE', 'XLF', 'ITB']
+const RS_TICKERS     = ['XLK','XLF','XLE','XLV','XLY','XLP','XLI','XLB','XLC','XLU','XLRE']
+const ALL_TICKERS_B  = [...new Set([...INDEX_TICKERS, ...SECTOR_TICKERS, ...RS_TICKERS])]
+
+async function fetchTickerB(ticker: string) {
+  const [quoteRes, histRes] = await Promise.allSettled([
+    getQuote(ticker), getHistoricalPrices(ticker, 260),
+  ])
+  const q    = quoteRes.status === 'fulfilled' ? quoteRes.value : null
+  const hist = histRes.status  === 'fulfilled' ? histRes.value  : null
+  if (!q) return null
+  const sorted = hist ? [...hist].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()) : []
+  const closes = sorted.map(d => d.close)
+  const sma50  = q.priceAvg50  ?? (closes.length >= 50  ? closes.slice(0,50).reduce((s,v)=>s+v,0)/50  : q.price)
+  const sma200 = q.priceAvg200 ?? (closes.length >= 200 ? closes.slice(0,200).reduce((s,v)=>s+v,0)/200 : q.price)
+  const prevSma200 = sorted.length >= 201 ? sorted.slice(1,201).map(d=>d.close).reduce((s,v)=>s+v,0)/200 : sma200*0.999
+  const rsi    = calcRSI(closes, 14) ?? 50
+  const macdR  = calcMACDHist(closes)
+  return { ticker, price:q.price, change:q.change, changePct:q.changePercentage,
+           sma50, sma200, prevSma200, rsi, macdHist:macdR?.macdHist??0,
+           prevMacdHist:macdR?.prevMacdHist??0, yearHigh:q.yearHigh }
+}
+
 async function getBazarData() {
   try {
-    const base = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'
-    const res  = await fetch(`${base}/api/bazar`, { next: { revalidate: 3600 } })
-    if (!res.ok) return null
-    return res.json()
+    const results = await Promise.allSettled(ALL_TICKERS_B.map(t => fetchTickerB(t)))
+    const dataMap: Record<string, Awaited<ReturnType<typeof fetchTickerB>>> = {}
+    ALL_TICKERS_B.forEach((t,i) => { dataMap[t] = results[i].status==='fulfilled' ? results[i].value : null })
+
+    const indices = INDEX_TICKERS.map(ticker => {
+      const d = dataMap[ticker]
+      if (!d || d.sma200==null) return null
+      const { stage, qualifier } = calcWeinstein(d.price, d.sma50, d.sma200, d.prevSma200)
+      return { ticker, price:d.price, change:d.change, changePct:d.changePct,
+               sma50:d.sma50, sma200:d.sma200, rsi:d.rsi, macdHist:d.macdHist,
+               yearHigh:d.yearHigh, stage, stageQual:qualifier }
+    })
+
+    const sectors = SECTOR_TICKERS.map(ticker => {
+      const d = dataMap[ticker]
+      if (!d || d.sma200==null) return null
+      const { stage } = calcWeinstein(d.price, d.sma50, d.sma200, d.prevSma200)
+      return { ticker, price:d.price, changePct:d.changePct,
+               sma50pct:((d.price-d.sma50)/d.sma50)*100,
+               sma200pct:((d.price-d.sma200)/d.sma200)*100, stage }
+    })
+
+    const sectorRS = RS_TICKERS
+      .map(ticker => { const d=dataMap[ticker]; if(!d||d.sma200==null)return null; return { ticker, mansfield:calcMansfield(d.price,d.sma200), dailyPct:d.changePct } })
+      .filter((x): x is NonNullable<typeof x> => x!==null)
+      .sort((a,b)=>b.mansfield-a.mansfield)
+
+    const idxArr: IndexData[] = INDEX_TICKERS.map(t=>{const d=dataMap[t]; if(!d)return null; return {price:d.price,sma50:d.sma50,sma200:d.sma200,prevSma200:d.prevSma200,rsi:d.rsi,macdHist:d.macdHist}}).filter((x):x is IndexData=>x!==null)
+    const { breadthPctAbove50dma, naaim, cnnFearGreed, cboe, earnings, opexDates } = MANUAL_DATA
+    const qqqIdx = idxArr[INDEX_TICKERS.indexOf('QQQ')] ?? idxArr[0]
+    const stage2Count = SECTOR_TICKERS.filter(t=>{const d=dataMap[t];if(!d||d.sma200==null)return false;return calcWeinstein(d.price,d.sma50,d.sma200,d.prevSma200).stage===2}).length
+    const today2 = new Date(); today2.setHours(0,0,0,0)
+    const opexDays = (() => { const up=opexDates.map(d=>new Date(d)).filter(d=>d>=today2).sort((a,b)=>a.getTime()-b.getTime()); return up.length?Math.ceil((up[0].getTime()-today2.getTime())/86400000):99 })()
+
+    const pillars = idxArr.length>=1 ? {
+      trend:     calcTrend(idxArr),
+      momentum:  qqqIdx ? calcMomentum(qqqIdx) : 50,
+      breadth:   calcBreadth(breadthPctAbove50dma, naaim),
+      earnings:  calcEarnings(earnings.beatRate, earnings.blendedGrowth),
+      sector:    calcSector(stage2Count, SECTOR_TICKERS.length),
+      sentiment: calcSentiment(cnnFearGreed, naaim, cboe.equityPC),
+      opex:      calcOpex(opexDays),
+    } : null
+
+    return { indices, sectors, sectorRS, pillars, healthScore: pillars ? calcHealthScore(pillars) : null, opexDays }
   } catch {
     return null
   }
@@ -121,7 +195,7 @@ export default async function BazarPage() {
   // Tiker-by-tiker merge: real data varsa istifadə et, yoxdursa mock götür
   type ApiIdx = { ticker:string; price:number; change:number; changePct:number; sma50:number|null; sma200:number|null; rsi:number|null; macdHist:number|null; yearHigh:number; stage:1|2|3|4; stageQual:string }
   const apiIdxMap: Record<string, ApiIdx> = {}
-  ;(api?.indices ?? []).filter(Boolean).forEach((d: ApiIdx) => { apiIdxMap[d.ticker] = d })
+  ;(api?.indices ?? []).forEach((d: ApiIdx | null) => { if (d) apiIdxMap[d.ticker] = d })
 
   const indices = MOCK_INDICES.map(mock => {
     const live = apiIdxMap[mock.ticker]
@@ -146,7 +220,7 @@ export default async function BazarPage() {
 
   type ApiSector = { ticker:string; price:number; changePct:number; sma50pct:number|null; sma200pct:number; stage:1|2|3|4 }
   const apiSecMap: Record<string, ApiSector> = {}
-  ;(api?.sectors ?? []).filter(Boolean).forEach((d: ApiSector) => { apiSecMap[d.ticker] = d })
+  ;(api?.sectors ?? []).forEach((d: ApiSector | null) => { if (d) apiSecMap[d.ticker] = d })
 
   const sectors = MOCK_SECTORS.map(mock => {
     const live = apiSecMap[mock.ticker]
@@ -165,7 +239,7 @@ export default async function BazarPage() {
 
   // Sektor RS
   const sectorRS = (api?.sectorRS ?? []).filter(Boolean).length > 0
-    ? (api.sectorRS as Array<{ticker:string;mansfield:number;dailyPct:number}>)
+    ? (api!.sectorRS as Array<{ticker:string;mansfield:number;dailyPct:number}>)
         .map(d => ({ ...d, name: SECTOR_NAMES[d.ticker] ?? d.ticker }))
     : MOCK_SECTOR_RS
 
@@ -181,14 +255,8 @@ export default async function BazarPage() {
       }))
     : MOCK_PILLARS
 
-  // RS ratios — enrich with real data if available
+  // RS ratios — mock data (ratio hesablaması ayrıca endpoint lazımdır)
   const ratios = RATIOS.map(r => {
-    if (r.label.startsWith('XLK/XLP') && api?.ratioData?.xlkXlp != null) {
-      return { ...r, value: (api.ratioData.xlkXlp as number).toFixed(3) }
-    }
-    if (r.label.startsWith('XLY/XLP') && api?.ratioData?.xlySpl != null) {
-      return { ...r, value: (api.ratioData.xlySpl as number).toFixed(3) }
-    }
     return r
   })
 
