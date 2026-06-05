@@ -439,19 +439,22 @@ ${scored.map(d => `${d!.ticker}: Qiymət $${d!.quote.price}, Swing ${d!.swingSco
 
       if (!ticker || isNaN(price) || price === 0) return null
 
+      const s50  = isNaN(sma50)  ? price * 0.93 : sma50
+      const s200 = isNaN(sma200) ? price * 0.88 : sma200
+      const r    = isNaN(rsi)    ? 50            : rsi
+      const v    = isNaN(vol) || vol === 0 ? 1   : vol
+
       const swingScore = calcSwingScore({
-        price,
-        sma20: isNaN(sma50) ? price * 0.97 : sma50,
-        sma50: isNaN(sma50) ? price * 0.93 : sma50,
-        sma200: isNaN(sma200) ? price * 0.88 : sma200,
-        rsi: isNaN(rsi) ? 50 : rsi,
-        macdHistogram: 0, macdHistogramPrev: 0,
-        volume: isNaN(vol) || vol === 0 ? 1 : vol,
-        avgVolume20: isNaN(vol) || vol === 0 ? 1 : vol,
-        yearHigh: price * 1.1,
-        ohlcv90: [],
+        price, sma20: s50, sma50: s50, sma200: s200,
+        rsi: r, macdHistogram: 0, macdHistogramPrev: 0,
+        volume: v, avgVolume20: v, yearHigh: price * 1.1, ohlcv90: [],
       })
-      return { ticker, price, rsi, sma50, sma200, swingScore }
+      const eightLayer = calc8LayerScore({
+        price, sma50: s50, sma200: s200, prevSma200: s200 * 0.999,
+        rsi: r, macdHist: 0, prevMacdHist: 0,
+        vcpScore: 0, volume: v, avgVolume20: v, yearHigh: price * 1.1,
+      })
+      return { ticker, price, rsi: r, sma50: s50, sma200: s200, swingScore, eightLayer }
     }).filter(Boolean)
 
     if (!scored.length) {
