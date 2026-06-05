@@ -14,6 +14,7 @@ import { MANUAL_DATA } from '@/lib/manualData'
 import { getFredLatest, calcFredYoY } from '@/lib/fred'
 import { getEconCalendar } from '@/lib/fmp'
 import { tavilySearch, type TavilyResult } from '@/lib/tavily'
+import { getMarketSnapshot } from '@/lib/yahoo'
 
 function toNewsItems(results: TavilyResult[] | null | undefined) {
   return (results ?? []).slice(0, 4).map(r => ({
@@ -21,17 +22,91 @@ function toNewsItems(results: TavilyResult[] | null | undefined) {
   }))
 }
 
+async function generateHeadline(data: {
+  market: ReturnType<typeof toNewsItems>
+  spChange: number | null
+  nasdaqChange: number | null
+  fedNews: ReturnType<typeof toNewsItems>
+  cpiYoY: number | null
+  unrate: number | null
+  t10y2y: number | null
+}): Promise<{ headline: string; summary: string[]; scenarios: typeof MANUAL_DATA.scenarios } | null> {
+  const key = process.env.ANTHROPIC_API_KEY
+  if (!key) return null
+  try {
+    const topNews = [...data.market, ...data.fedNews]
+      .slice(0, 5)
+      .map(n => `• ${n.title}: ${n.snippet.slice(0, 120)}`)
+      .join('\n')
+
+    const fredContext = [
+      data.spChange   != null ? `S&P 500 ${data.spChange >= 0 ? '+' : ''}${data.spChange.toFixed(2)}%` : '',
+      data.nasdaqChange != null ? `Nasdaq ${data.nasdaqChange >= 0 ? '+' : ''}${data.nasdaqChange.toFixed(2)}%` : '',
+      data.cpiYoY     != null ? `CPI YoY ${data.cpiYoY.toFixed(2)}%` : '',
+      data.unrate     != null ? `İşsizlik ${data.unrate.toFixed(1)}%` : '',
+      data.t10y2y     != null ? `10Y-2Y əyrisi ${data.t10y2y.toFixed(2)}%` : '',
+    ].filter(Boolean).join(', ')
+
+    const prompt = `Sən Azərbaycanca yazan maliyyə analitikisən. Aşağıdakı bazar datasına əsasən:
+
+BAZAR DATA: ${fredContext}
+
+SON XƏBƏRLƏR:
+${topNews}
+
+Bu formatda JSON cavab ver (başqa heç nə yazma, yalnız JSON):
+{
+  "headline": "Bugünün ən vacib başlığı — 10-15 söz, konkret rəqəm var, sensasiyasız",
+  "summary": [
+    "Dünənki bazar hərəkəti — nə baş verdi, konkret % ilə",
+    "Əsas səbəb — niyə bu hərəkət baş verdi",
+    "Bu gün nəyə diqqət yetirmək lazımdır"
+  ],
+  "scenarios": {
+    "up": { "trigger": "...", "reaction": "...", "watch": "..." },
+    "neutral": { "trigger": "...", "reaction": "...", "watch": "..." },
+    "down": { "trigger": "...", "reaction": "...", "watch": "..." }
+  }
+}
+
+Qaydalar: "mütləq" demə, rəqəm ol, Azərbaycan investoru üçün yaz.`
+
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 800,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    })
+    if (!res.ok) return null
+    const d = await res.json()
+    const text = d.content?.[0]?.text ?? ''
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) return null
+    return JSON.parse(jsonMatch[0])
+  } catch {
+    return null
+  }
+}
+
 async function getMakroData() {
   try {
     const todayStr = new Date().toISOString().split('T')[0]
     const in3Days  = new Date(Date.now() + 3*86400000).toISOString().split('T')[0]
 
+    // Paralel: FRED + Tavily + Yahoo hamısı eyni anda
     const [
       dgs10, dgs2, dfii10, dff, sofr, t10y2y, t10y3m, dgs30,
       cpiYoY, coreCpiYoY, pceYoY, ppiYoY, gdpnow, t5yifr, t10yie, walcl,
       unrate, icsa, jtsjol, hourlyYoY, umcsent, retailYoY,
       mortgage, housingYoY, hyoas, nfci, altsales, sahm,
-      calendar, newsMarket, newsFed, newsEcon,
+      calendar, newsMarket, newsFed, newsEcon, yahooSnap,
     ] = await Promise.allSettled([
       getFredLatest('DGS10'), getFredLatest('DGS2'), getFredLatest('DFII10'),
       getFredLatest('DFF'),   getFredLatest('SOFR'),  getFredLatest('T10Y2Y'),
@@ -48,19 +123,45 @@ async function getMakroData() {
       tavilySearch('US stock market news today 2026', 4),
       tavilySearch('Federal Reserve interest rate news today 2026', 4),
       tavilySearch('S&P 500 economic data inflation today 2026', 4),
+      getMarketSnapshot(),
     ])
 
     function s<T>(r: PromiseSettledResult<T>): T | null {
       return r.status === 'fulfilled' ? r.value : null
     }
 
+    const yahoo   = s(yahooSnap)
     const marketNews = toNewsItems(s(newsMarket)?.results)
     const fedNews    = toNewsItems(s(newsFed)?.results)
     const econNews   = toNewsItems(s(newsEcon)?.results)
     const allNews    = [...marketNews, ...fedNews, ...econNews]
       .filter((x, i, a) => a.findIndex(y => y.url === x.url) === i)
 
+    // Claude ilə başlıq + xülasə + ssenari yarat
+    const generated = await generateHeadline({
+      market:        marketNews,
+      fedNews,
+      spChange:      yahoo?.sp500?.changePct    ?? null,
+      nasdaqChange:  yahoo?.nasdaq?.changePct   ?? null,
+      cpiYoY:        s(cpiYoY),
+      unrate:        s(unrate),
+      t10y2y:        s(t10y2y),
+    })
+
     return {
+      // Yahoo Finance: real indeks datası
+      kpi: {
+        sp500:       yahoo?.sp500    ? { value: yahoo.sp500.price,    change: yahoo.sp500.changePct    } : null,
+        nasdaq:      yahoo?.nasdaq   ? { value: yahoo.nasdaq.price,   change: yahoo.nasdaq.changePct   } : null,
+        dowjones:    yahoo?.dow      ? { value: yahoo.dow.price,      change: yahoo.dow.changePct      } : null,
+        vix:         yahoo?.vix      ? { value: yahoo.vix.price,      change: yahoo.vix.changePct      } : null,
+        wti:         yahoo?.wti      ? { value: yahoo.wti.price,      change: yahoo.wti.changePct      } : null,
+        brent:       yahoo?.brent    ? { value: yahoo.brent.price,    change: yahoo.brent.changePct    } : null,
+        gold:        yahoo?.gold     ? { value: yahoo.gold.price,     change: yahoo.gold.changePct     } : null,
+        bitcoin:     yahoo?.bitcoin  ? { value: yahoo.bitcoin.price,  change: yahoo.bitcoin.changePct  } : null,
+      },
+      // Claude-un yaratdığı mətn
+      generated,
       news: {
         market: marketNews, fed: fedNews, econ: econNews, all: allNews,
         answers: {
@@ -90,7 +191,8 @@ async function getMakroData() {
       },
       risk: {
         t10y2y: s(t10y2y), t10y3m: s(t10y3m),
-        hyoas: s(hyoas), sahm: s(sahm), vix: null,
+        hyoas: s(hyoas), sahm: s(sahm),
+        vix: yahoo?.vix?.price ?? null,
       },
       calendar: s(calendar),
     }
@@ -115,22 +217,26 @@ export default async function MakroPage() {
           GÜNDƏLİK MAKRO PANO · ABD İQTİSADİYYATI
         </p>
         <h1 className="text-xl font-bold text-[var(--text-primary)] font-ui leading-snug">
-          {MANUAL_DATA.macroHeadline}
+          {api?.generated?.headline ?? MANUAL_DATA.macroHeadline}
         </h1>
         <p className="text-xs text-[var(--text-secondary)] font-ui">
-          {today} · Bakı vaxtı (UTC+4) · Data: FMP + FRED
+          {today} · Bakı vaxtı (UTC+4) · Data: Yahoo Finance + FRED + Tavily
+          {api?.generated && <span className="ml-2 text-[var(--green)]">● Claude tərəfindən yazıldı</span>}
         </p>
       </div>
 
       {!api && <ErrorBanner />}
 
       {/* 3 cümlə xülasə + Tavily xəbərləri */}
-      <DayStory news={api?.news ?? null} />
+      <DayStory
+        news={api?.news ?? null}
+        generatedSummary={api?.generated?.summary ?? null}
+      />
 
       {/* Panel 01 */}
       <section>
         <SectionHeader number="01" title="SÜRƏTLİ BAXIŞ" />
-        <QuickSnapshot apiData={null} ratesData={api?.rates ?? null} />
+        <QuickSnapshot apiData={(api?.kpi ?? null) as Record<string,{value:number|null;change:number|null}> | null} ratesData={api?.rates ?? null} />
         <div className="mt-3 border-l-2 border-[var(--text-accent)] pl-3">
           <p className="text-xs italic text-[var(--text-secondary)] font-ui">
             Yəni: Risk iştahı zəifdir — VIX sakit, amma indekslər düşüşdədir. Hürmüz + tarif qorxusu dominantdır.
@@ -153,7 +259,7 @@ export default async function MakroPage() {
       {/* Panel 04 */}
       <section>
         <SectionHeader number="04" title="ƏGƏR BU OLARSA... SSENARİLƏR" />
-        <Scenarios />
+        <Scenarios scenarios={api?.generated?.scenarios ?? null} />
       </section>
 
       {/* Panel 05 */}

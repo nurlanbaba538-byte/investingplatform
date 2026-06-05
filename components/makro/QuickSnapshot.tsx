@@ -5,7 +5,7 @@ type KpiItem  = { value: number | null; change: number | null }
 type RatesData = { dgs10?: number|null; dgs2?: number|null; dfii10?: number|null }
 
 type Props = {
-  apiData?:   Record<string, KpiItem> | null   // FMP (indekslər) — pulsuz planda boşdur
+  apiData?:   Record<string, KpiItem> | null   // Yahoo Finance (indekslər, VIX, əmtəələr)
   ratesData?: RatesData | null                  // FRED (xəzinə, real faiz)
 }
 
@@ -16,17 +16,17 @@ const CARDS: Array<{
   fredKey?:     keyof RatesData
   colorOverride?: 'green' | 'red' | 'amber' | 'neutral'
 }> = [
-  { label: 'S&P 500',        key: 'sp500',       source: 'Manual'                                },
-  { label: 'NASDAQ',         key: 'nasdaq',      source: 'Manual'                                },
-  { label: 'DOW JONES',      key: 'dowjones',    source: 'Manual'                                },
+  { label: 'S&P 500',        key: 'sp500',       source: 'Yahoo'                                 },
+  { label: 'NASDAQ',         key: 'nasdaq',      source: 'Yahoo'                                 },
+  { label: 'DOW JONES',      key: 'dowjones',    source: 'Yahoo'                                 },
   { label: '10Y XƏZİNƏ',    key: 'treasury10y', source: 'FRED',  fredKey: 'dgs10',  colorOverride: 'amber' },
   { label: '2Y XƏZİNƏ',     key: 'treasury2y',  source: 'FRED',  fredKey: 'dgs2',   colorOverride: 'amber' },
   { label: 'DXY (DOLLAR)',   key: 'dxy',         source: 'Manual'                                },
-  { label: 'VIX (QORXU)',    key: 'vix',         source: 'Manual', colorOverride: 'red'           },
-  { label: 'WTI NEFT',       key: 'wti',         source: 'Manual'                                },
-  { label: 'BRENT NEFT',     key: 'brent',       source: 'Manual'                                },
-  { label: 'QIZIL',          key: 'gold',        source: 'Manual'                                },
-  { label: 'BITCOIN',        key: 'bitcoin',     source: 'Manual'                                },
+  { label: 'VIX (QORXU)',    key: 'vix',         source: 'Yahoo',  colorOverride: 'red'           },
+  { label: 'WTI NEFT',       key: 'wti',         source: 'Yahoo'                                 },
+  { label: 'BRENT NEFT',     key: 'brent',       source: 'Yahoo'                                 },
+  { label: 'QIZIL',          key: 'gold',        source: 'Yahoo'                                 },
+  { label: 'BITCOIN',        key: 'bitcoin',     source: 'Yahoo'                                 },
   { label: '10Y REAL FAİZ',  key: 'realRate10y', source: 'FRED',  fredKey: 'dfii10', colorOverride: 'amber' },
 ]
 
@@ -76,9 +76,9 @@ export default function QuickSnapshot({ apiData, ratesData }: Props) {
             label={label}
             value={fmt(value, key)}
             change={change}
-            source={isLive ? 'FMP' : 'Manual'}
+            source={isLive ? source : 'Manual'}
             date={today}
-            verified={true}   // manualData həmişə "yoxlanılmış" sayılır
+            verified={true}
             colorOverride={colorOverride}
           />
         )

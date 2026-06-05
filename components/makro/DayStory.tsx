@@ -11,10 +11,12 @@ type Props = {
       econ?:   string | null
     }
   } | null
+  generatedSummary?: string[] | null
 }
 
-export default function DayStory({ news }: Props) {
+export default function DayStory({ news, generatedSummary }: Props) {
   const { macroHeadline, macroSummary3 } = MANUAL_DATA
+  const summary = generatedSummary ?? macroSummary3
   const hasNews = news?.all && news.all.length > 0
   const answers = news?.answers
 
@@ -26,7 +28,7 @@ export default function DayStory({ news }: Props) {
           {macroHeadline}
         </h2>
         <div className="space-y-2">
-          {macroSummary3.map((sentence, i) => (
+          {summary.map((sentence, i) => (
             <p key={i} className="text-sm text-[var(--text-secondary)] font-ui leading-relaxed">
               {sentence}
             </p>

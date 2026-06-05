@@ -1,6 +1,7 @@
 import { MANUAL_DATA } from '@/lib/manualData'
 
-const { scenarios } = MANUAL_DATA
+type ScenarioData = { trigger: string; reaction: string; watch: string }
+type Props = { scenarios?: { up: ScenarioData; neutral: ScenarioData; down: ScenarioData } | null }
 
 const CARDS = [
   {
@@ -23,7 +24,8 @@ const CARDS = [
   },
 ]
 
-export default function Scenarios() {
+export default function Scenarios({ scenarios: propScenarios }: Props) {
+  const scenarios = propScenarios ?? MANUAL_DATA.scenarios
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
       {CARDS.map(({ key, label, borderColor, labelColor }) => {
