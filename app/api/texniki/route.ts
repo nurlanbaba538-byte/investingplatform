@@ -277,15 +277,31 @@ ${scored.map(d => `${d!.ticker}: Qiymət $${d!.quote.price}, Swing ${d!.swingSco
 
     // BOM + encoding təmizliyi
     const buf  = await file.arrayBuffer()
-    let text   = new TextDecoder('utf-8').decode(buf).replace(/^﻿/, '')
 
-    const parsed = Papa.parse<Record<string,string>>(text, {
-      header: true, skipEmptyLines: true, dynamicTyping: false,
-    })
-    const rows = parsed.data as Record<string,string>[]
+    // XLSX formatını yoxla (magic bytes: PK\x03\x04)
+    const magic = new Uint8Array(buf.slice(0, 4))
+    let rows: Record<string,string>[] = []
+    let text = ''
+
+    if (magic[0] === 0x50 && magic[1] === 0x4B) {
+      // XLSX faylı — xlsx library ilə parse et
+      const XLSX = await import('xlsx')
+      const wb   = XLSX.read(buf, { type: 'array' })
+      const ws   = wb.Sheets[wb.SheetNames[0]]
+      rows = XLSX.utils.sheet_to_json(ws, { defval: '' }) as Record<string,string>[]
+    } else {
+      // CSV — PapaParse ilə parse et
+      text = new TextDecoder('utf-8').decode(buf).replace(/^﻿/, '')
+      const parsed = Papa.parse<Record<string,string>>(text, {
+        header: true, skipEmptyLines: true, dynamicTyping: false,
+      })
+      rows = parsed.data as Record<string,string>[]
+    }
 
     if (!rows.length) {
-      return Response.json({ error: 'CSV boşdur və ya oxunmadı' }, { status: 422 })
+      return Response.json({
+        error: 'CSV parse edilmedi. Fayl bosh ve ya oxunmadi. Fayli yeniden yukleyin.',
+      }, { status: 422 })
     }
 
     // BOM-lu başlıqları da təmizlə
@@ -344,7 +360,10 @@ ${scored.map(d => `${d!.ticker}: Qiymət $${d!.quote.price}, Swing ${d!.swingSco
     })
 
     if (!effectiveTickerCol) {
-      return Response.json({ error: 'CSV sütunları oxunmadı' }, { status: 422 })
+      const hdrPreview = headers.slice(0, 6).join(' | ') || 'empty'
+      return Response.json({
+        error: `Ticker sutunu tapilmadi. CSV basliqlar: ${hdrPreview}. Ticker, Symbol, Name ve ya Full Ticker sutunu olmalidir.`,
+      }, { status: 422 })
     }
 
     const scored = rows.map(row => {
@@ -373,8 +392,9 @@ ${scored.map(d => `${d!.ticker}: Qiymət $${d!.quote.price}, Swing ${d!.swingSco
     }).filter(Boolean)
 
     if (!scored.length) {
+      const hdr2 = headers.slice(0, 6).join(' | ')
       return Response.json({
-        error: `Heç bir sətir oxunmadı. Başlıqlar: ${headers.slice(0,6).join(' | ')}. Ticker sütunu: "${effectiveTickerCol}", Qiymət sütunu: "${effectivePriceCol ?? 'tapılmadı'}"`,
+        error: `Hec bir ticker oxunmadi. Basliqlari: ${hdr2}. Ticker col: "${effectiveTickerCol}", Price col: "${effectivePriceCol ?? 'yoxdur'}"`,
       }, { status: 422 })
     }
 
