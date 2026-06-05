@@ -17,8 +17,9 @@ function spreadLevel(v: number | null | undefined): RiskLevel {
 }
 function hyLevel(v: number | null | undefined): RiskLevel {
   if (v == null) return 'amber'
-  if (v > 500) return 'red'
-  if (v > 300) return 'amber'
+  const bp = v * 100
+  if (bp > 500) return 'red'
+  if (bp > 300) return 'amber'
   return 'green'
 }
 function sahmLevel(v: number | null | undefined): RiskLevel {
@@ -65,7 +66,7 @@ export default function RiskPanel({ apiData }: Props) {
     },
     {
       label: 'HY KREDİT SPREADİ',
-      value: d.hyoas != null ? `${d.hyoas.toFixed(0)}bp` : null,
+      value: d.hyoas != null ? `${(d.hyoas * 100).toFixed(0)}bp` : null,
       level: hyLevel(d.hyoas),
       note: '300bp altı sağlam, 500bp+ alarm',
       verified: d.hyoas != null,
