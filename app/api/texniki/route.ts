@@ -290,23 +290,69 @@ ${scored.map(d => `${d!.ticker}: Qiymət $${d!.quote.price}, Swing ${d!.swingSco
       const ws   = wb.Sheets[wb.SheetNames[0]]
       rows = XLSX.utils.sheet_to_json(ws, { defval: '' }) as Record<string,string>[]
     } else {
-      // CSV — PapaParse ilə parse et
+      // CSV — PapaParse ilə parse et (delimiter auto-detect)
       text = new TextDecoder('utf-8').decode(buf).replace(/^﻿/, '')
-      const parsed = Papa.parse<Record<string,string>>(text, {
+
+      // Header row-lu cəhd
+      const p1 = Papa.parse<Record<string,string>>(text, {
         header: true, skipEmptyLines: true, dynamicTyping: false,
       })
-      rows = parsed.data as Record<string,string>[]
+      const r1 = p1.data as Record<string,string>[]
+
+      // Auto-generated header yoxla: _1, _2 ... PapaParse boş header üçün verir
+      const h1 = Object.keys(r1[0] ?? {})
+      const isAutoHeader = h1.length > 0 && h1.every(h => /^_\d+$/.test(h.trim()))
+
+      if (isAutoHeader || !r1.length) {
+        // Header yoxdur — header:false ilə yenidən parse et, ilk sıra data
+        const p2 = Papa.parse<string[]>(text, {
+          header: false, skipEmptyLines: true, dynamicTyping: false,
+        })
+        const raw = p2.data as string[][]
+        if (raw.length > 0) {
+          // Hər sütuna mövqe adı ver: col0, col1 ...
+          const colNames = raw[0].map((_, i) => `col${i}`)
+          rows = raw.map(r => Object.fromEntries(r.map((v, i) => [colNames[i], v])))
+        }
+      } else {
+        rows = r1
+      }
     }
 
     if (!rows.length) {
       return Response.json({
-        error: 'CSV parse edilmedi. Fayl bosh ve ya oxunmadi. Fayli yeniden yukleyin.',
+        error: 'CSV parse edilmedi. Fayl bosh ve ya oxunmadi.',
       }, { status: 422 })
     }
 
     // BOM-lu başlıqları da təmizlə
     const rawHeaders = Object.keys(rows[0] ?? {})
-    const headers = rawHeaders.map(h => h.trim().replace(/^﻿/,''))
+    const headers = rawHeaders.map(h => h.trim().replace(/^﻿/, ''))
+
+    // Header yoxdursa — sütunları məzmuna görə tap (mətn = ticker, ədəd = qiymət)
+    const isPositional = headers.every(h => /^col\d+$/.test(h))
+    if (isPositional && rows.length > 0) {
+      // İlk sıradaki sütunları məzmuna görə ayır
+      const firstRow = rows[0]
+      const textCols: string[] = []
+      const numCols:  string[] = []
+      headers.forEach(h => {
+        const v = (firstRow[h] ?? '').toString().replace(/[,$\s]/g,'')
+        if (!isNaN(parseFloat(v)) && parseFloat(v) > 0) numCols.push(h)
+        else if ((firstRow[h] ?? '').toString().trim().length > 0) textCols.push(h)
+      })
+      // Sütunlara mənalı ad ver
+      if (textCols[0]) headers[headers.indexOf(textCols[0])] = 'Ticker'
+      if (numCols[0])  headers[headers.indexOf(numCols[0])]  = 'Price'
+      if (numCols[1])  headers[headers.indexOf(numCols[1])]  = 'RSI'
+      if (numCols[2])  headers[headers.indexOf(numCols[2])]  = 'SMA50'
+      if (numCols[3])  headers[headers.indexOf(numCols[3])]  = 'SMA200'
+      // rows-u da yenilə
+      const hMap = Object.fromEntries(rawHeaders.map((rh, i) => [rh, headers[i]]))
+      rows = rows.map(r => Object.fromEntries(
+        Object.entries(r).map(([k, v]) => [hMap[k] ?? k, v])
+      ))
+    }
 
     // Hər sütun üçün çoxlu ad variantları — case-insensitive, partial match
     function findCol(candidates: string[]): string | undefined {
