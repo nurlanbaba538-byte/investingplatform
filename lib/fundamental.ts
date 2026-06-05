@@ -20,10 +20,13 @@ export function fl(s: string | null | undefined): number | null {
 // ── Sütun axtarışı ───────────────────────────────────────────
 export function findHeaderRow(rows: string[][]): number {
   for (let i = 0; i < rows.length; i++) {
-    const row = rows[i].map(c => (c ?? '').toString())
-    if (row.some(c => c.includes('Name')) && row.some(c => c.includes('Full Ticker'))) {
-      return i
-    }
+    const row = rows[i].map(c => (c ?? '').toString().trim())
+    if (row.every(c => c === '')) continue
+    const hasName   = row.some(c => c.includes('Name') || c.toLowerCase().includes('name'))
+    const hasTicker = row.some(c =>
+      c.includes('Full Ticker') || c.toLowerCase() === 'ticker' || c.toLowerCase() === 'symbol'
+    )
+    if (hasName && hasTicker) return i
   }
   return -1
 }

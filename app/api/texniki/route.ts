@@ -275,47 +275,64 @@ ${scored.map(d => `${d!.ticker}: Qiymət $${d!.quote.price}, Swing ${d!.swingSco
     const file = form.get('file') as File | null
     if (!file) return Response.json({ error: 'CSV tapılmadı' }, { status: 400 })
 
-    // BOM + encoding təmizliyi
-    const buf  = await file.arrayBuffer()
-
-    // XLSX formatını yoxla (magic bytes: PK\x03\x04)
+    // BOM + encoding
+    const buf   = await file.arrayBuffer()
     const magic = new Uint8Array(buf.slice(0, 4))
     let rows: Record<string,string>[] = []
-    let text = ''
 
     if (magic[0] === 0x50 && magic[1] === 0x4B) {
-      // XLSX faylı — xlsx library ilə parse et
+      // XLSX
       const XLSX = await import('xlsx')
       const wb   = XLSX.read(buf, { type: 'array' })
       const ws   = wb.Sheets[wb.SheetNames[0]]
-      rows = XLSX.utils.sheet_to_json(ws, { defval: '' }) as Record<string,string>[]
-    } else {
-      // CSV — PapaParse ilə parse et (delimiter auto-detect)
-      text = new TextDecoder('utf-8').decode(buf).replace(/^﻿/, '')
-
-      // Header row-lu cəhd
-      const p1 = Papa.parse<Record<string,string>>(text, {
-        header: true, skipEmptyLines: true, dynamicTyping: false,
-      })
-      const r1 = p1.data as Record<string,string>[]
-
-      // Auto-generated header yoxla: _1, _2 ... PapaParse boş header üçün verir
-      const h1 = Object.keys(r1[0] ?? {})
-      const isAutoHeader = h1.length > 0 && h1.every(h => /^_\d+$/.test(h.trim()))
-
-      if (isAutoHeader || !r1.length) {
-        // Header yoxdur — header:false ilə yenidən parse et, ilk sıra data
-        const p2 = Papa.parse<string[]>(text, {
-          header: false, skipEmptyLines: true, dynamicTyping: false,
-        })
-        const raw = p2.data as string[][]
-        if (raw.length > 0) {
-          // Hər sütuna mövqe adı ver: col0, col1 ...
-          const colNames = raw[0].map((_, i) => `col${i}`)
-          rows = raw.map(r => Object.fromEntries(r.map((v, i) => [colNames[i], v])))
-        }
+      const raw2d = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) as string[][]
+      // Baştakı tamamilə boş sətirləri sil
+      const firstRealX = raw2d.findIndex(r => r.some(c => String(c).trim() !== ''))
+      const cleanX = firstRealX >= 0 ? raw2d.slice(firstRealX) : raw2d
+      const hIdxX = cleanX.findIndex(r =>
+        r.some(c => String(c).includes('Name') || String(c).toLowerCase().includes('name')) &&
+        r.some(c => String(c).includes('Full Ticker') || String(c).toLowerCase() === 'ticker' || String(c).toLowerCase() === 'symbol')
+      )
+      if (hIdxX >= 0) {
+        const hdrs = cleanX[hIdxX].map(c => String(c).trim())
+        rows = cleanX.slice(hIdxX + 1)
+          .filter(r => r.some(v => String(v).trim()))
+          .map(r => Object.fromEntries(hdrs.map((h, i) => [h, String(r[i] ?? '').trim()])))
       } else {
-        rows = r1
+        const hdrs = cleanX[0]?.map(c => String(c).trim()) ?? []
+        rows = cleanX.slice(1)
+          .filter(r => r.some(v => String(v).trim()))
+          .map(r => Object.fromEntries(hdrs.map((h, i) => [h, String(r[i] ?? '').trim()])))
+      }
+    } else {
+      // CSV — hamsını array kimi al, header sırasını tap
+      const text = new TextDecoder('utf-8').decode(buf).replace(/^﻿/, '')
+      const p = Papa.parse<string[]>(text, {
+        header: false, skipEmptyLines: false, dynamicTyping: false,
+      })
+      const allRows = p.data as string[][]
+
+      // Baştakı tamamilə boş sətirləri sil (vergüllü boş sətirləri də daxil)
+      const firstReal = allRows.findIndex(r => r.some(v => v.trim() !== ''))
+      const cleanRows = firstReal >= 0 ? allRows.slice(firstReal) : allRows
+
+      // "Name" VƏ ("Full Ticker" / "Ticker" / "Symbol") olan sıranı tap
+      const hIdx = cleanRows.findIndex(r =>
+        r.some(c => c.trim() === 'Name' || c.trim().toLowerCase() === 'name') &&
+        r.some(c => c.trim() === 'Full Ticker' || c.trim().toLowerCase() === 'ticker' || c.trim().toLowerCase() === 'symbol')
+      )
+
+      if (hIdx >= 0) {
+        const hdrs = cleanRows[hIdx].map(c => c.trim())
+        rows = cleanRows.slice(hIdx + 1)
+          .filter(r => r.some(v => v.trim()))
+          .map(r => Object.fromEntries(hdrs.map((h, i) => [h, (r[i] ?? '').trim()])))
+      } else {
+        // Header tapılmadı — ilk qeyri-boş sıranı header kimi götür
+        const hdrs = cleanRows[0]?.map(c => c.trim()) ?? []
+        rows = cleanRows.slice(1)
+          .filter(r => r.some(v => v.trim()))
+          .map(r => Object.fromEntries(hdrs.map((h, i) => [h, (r[i] ?? '').trim()])))
       }
     }
 
