@@ -66,7 +66,17 @@ export default function TexnikiPage() {
       }
 
       const res = await fetch('/api/texniki', { method:'POST', body:form })
-      if (!res.ok || !res.body) { setError('API xətası'); setLoading(false); return }
+      if (!res.ok) {
+        try {
+          const errData = await res.json()
+          setError(errData.error ?? `Server xətası (${res.status})`)
+        } catch {
+          setError(`Server xətası (${res.status})`)
+        }
+        setLoading(false)
+        return
+      }
+      if (!res.body) { setError('Boş cavab'); setLoading(false); return }
 
       const reader  = res.body.getReader()
       const decoder = new TextDecoder()

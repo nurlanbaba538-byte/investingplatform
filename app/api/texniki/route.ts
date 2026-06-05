@@ -278,23 +278,53 @@ ${scored.map(d => `${d!.ticker}: Qiymət $${d!.quote.price}, Swing ${d!.swingSco
     const parsed = Papa.parse<Record<string,string>>(text, { header:true, skipEmptyLines:true })
     const rows   = parsed.data
 
-    const tickerCol  = ['Ticker','Symbol','ticker','symbol'].find(k => rows[0]?.[k] !== undefined)
-    const priceCol   = ['Price','price','Close','close'].find(k => rows[0]?.[k] !== undefined)
-    const rsiCol     = ['RSI','RSI (14)','rsi'].find(k => rows[0]?.[k] !== undefined)
-    const sma50Col   = ['SMA50','SMA 50','sma50'].find(k => rows[0]?.[k] !== undefined)
-    const sma200Col  = ['SMA200','SMA 200','sma200'].find(k => rows[0]?.[k] !== undefined)
+    if (!rows.length) {
+      return Response.json({ error: 'CSV boşdur və ya oxunmadı' }, { status: 422 })
+    }
+
+    const headers = Object.keys(rows[0] ?? {})
+
+    // Hər sütun üçün çoxlu ad variantları
+    function findCol(candidates: string[]): string | undefined {
+      return candidates.find(c => headers.some(h => h.trim().toLowerCase() === c.toLowerCase()))
+        ?? candidates.find(c => headers.some(h => h.trim().toLowerCase().includes(c.toLowerCase())))
+    }
+    function getVal(row: Record<string,string>, col: string | undefined): string {
+      if (!col) return ''
+      const key = headers.find(h => h.trim().toLowerCase() === col.toLowerCase())
+             ?? headers.find(h => h.trim().toLowerCase().includes(col.toLowerCase()))
+      return key ? (row[key] ?? '') : ''
+    }
+
+    const tickerCol = findCol(['Ticker','Symbol','ticker','symbol','Name','Semvol','Stock'])
+    const priceCol  = findCol(['Price','price','Close','close','Last','Last Price','Son Qiymət'])
+    const rsiCol    = findCol(['RSI','RSI (14)','rsi','Relative Strength Index (14d)'])
+    const sma50Col  = findCol(['SMA50','SMA 50','SMA(50)','sma50','50 SMA','MA50'])
+    const sma200Col = findCol(['SMA200','SMA 200','SMA(200)','sma200','200 SMA','MA200'])
+    const volumeCol = findCol(['Volume','volume','Vol'])
+
+    if (!tickerCol) {
+      return Response.json({
+        error: `Ticker sütunu tapılmadı. CSV başlıqları: ${headers.slice(0,8).join(', ')}`,
+      }, { status: 422 })
+    }
 
     const scored = rows.map(row => {
-      const ticker  = tickerCol  ? row[tickerCol]  : ''
-      const price   = priceCol   ? parseFloat(row[priceCol])  : 0
-      const rsi     = rsiCol     ? parseFloat(row[rsiCol])    : 50
-      const sma50   = sma50Col   ? parseFloat(row[sma50Col])  : price
-      const sma200  = sma200Col  ? parseFloat(row[sma200Col]) : price
-      if (!ticker || isNaN(price)) return null
+      const ticker = getVal(row, tickerCol).trim().replace(/"/g,'')
+      const rawPrice = getVal(row, priceCol).replace(/[,$\s]/g,'')
+      const price  = priceCol ? parseFloat(rawPrice) : 0
+      const rsi    = rsiCol   ? parseFloat(getVal(row, rsiCol))    : 50
+      const sma50  = sma50Col ? parseFloat(getVal(row, sma50Col))  : price
+      const sma200 = sma200Col? parseFloat(getVal(row, sma200Col)) : price
+      const vol    = volumeCol? parseFloat(getVal(row, volumeCol)) : 1
+      if (!ticker || isNaN(price) || price === 0) return null
 
       const swingScore = calcSwingScore({
         price, sma20:sma50, sma50, sma200, rsi, macdHistogram:0, macdHistogramPrev:0,
-        volume:1, avgVolume20:1, yearHigh:price*1.1, ohlcv90:[],
+        volume: isNaN(vol) ? 1 : vol,
+        avgVolume20: isNaN(vol) ? 1 : vol,
+        yearHigh: price * 1.1,
+        ohlcv90: [],
       })
       return { ticker, price, rsi, sma50, sma200, swingScore }
     }).filter(Boolean)
