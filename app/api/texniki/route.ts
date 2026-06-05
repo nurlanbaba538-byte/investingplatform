@@ -274,62 +274,109 @@ ${scored.map(d => `${d!.ticker}: Qiymət $${d!.quote.price}, Swing ${d!.swingSco
   if (mode === 'csv') {
     const file = form.get('file') as File | null
     if (!file) return Response.json({ error: 'CSV tapılmadı' }, { status: 400 })
-    const text   = new TextDecoder().decode(await file.arrayBuffer())
-    const parsed = Papa.parse<Record<string,string>>(text, { header:true, skipEmptyLines:true })
-    const rows   = parsed.data
+
+    // BOM + encoding təmizliyi
+    const buf  = await file.arrayBuffer()
+    let text   = new TextDecoder('utf-8').decode(buf).replace(/^﻿/, '')
+
+    const parsed = Papa.parse<Record<string,string>>(text, {
+      header: true, skipEmptyLines: true, dynamicTyping: false,
+    })
+    const rows = parsed.data as Record<string,string>[]
 
     if (!rows.length) {
       return Response.json({ error: 'CSV boşdur və ya oxunmadı' }, { status: 422 })
     }
 
-    const headers = Object.keys(rows[0] ?? {})
+    // BOM-lu başlıqları da təmizlə
+    const rawHeaders = Object.keys(rows[0] ?? {})
+    const headers = rawHeaders.map(h => h.trim().replace(/^﻿/,''))
 
-    // Hər sütun üçün çoxlu ad variantları
+    // Hər sütun üçün çoxlu ad variantları — case-insensitive, partial match
     function findCol(candidates: string[]): string | undefined {
-      return candidates.find(c => headers.some(h => h.trim().toLowerCase() === c.toLowerCase()))
-        ?? candidates.find(c => headers.some(h => h.trim().toLowerCase().includes(c.toLowerCase())))
+      for (const c of candidates) {
+        const cl = c.toLowerCase()
+        const exact = headers.find(h => h.toLowerCase() === cl)
+        if (exact) return rawHeaders[headers.indexOf(exact)]
+        const partial = headers.find(h => h.toLowerCase().includes(cl))
+        if (partial) return rawHeaders[headers.indexOf(partial)]
+      }
+      return undefined
     }
+
     function getVal(row: Record<string,string>, col: string | undefined): string {
       if (!col) return ''
-      const key = headers.find(h => h.trim().toLowerCase() === col.toLowerCase())
-             ?? headers.find(h => h.trim().toLowerCase().includes(col.toLowerCase()))
-      return key ? (row[key] ?? '') : ''
+      return (row[col] ?? row[col.trim()] ?? '').toString().trim()
     }
 
-    const tickerCol = findCol(['Ticker','Symbol','ticker','symbol','Name','Semvol','Stock'])
-    const priceCol  = findCol(['Price','price','Close','close','Last','Last Price','Son Qiymət'])
-    const rsiCol    = findCol(['RSI','RSI (14)','rsi','Relative Strength Index (14d)'])
-    const sma50Col  = findCol(['SMA50','SMA 50','SMA(50)','sma50','50 SMA','MA50'])
-    const sma200Col = findCol(['SMA200','SMA 200','SMA(200)','sma200','200 SMA','MA200'])
-    const volumeCol = findCol(['Volume','volume','Vol'])
+    function toNum(s: string): number {
+      return parseFloat(s.replace(/[,$\s%]/g,'').replace(',','.'))
+    }
 
-    if (!tickerCol) {
-      return Response.json({
-        error: `Ticker sütunu tapılmadı. CSV başlıqları: ${headers.slice(0,8).join(', ')}`,
-      }, { status: 422 })
+    const tickerCol = findCol([
+      'Ticker','Symbol','ticker','symbol','Name','Semvol','Stock',
+      'full ticker','Full Ticker','Instrument','Code',
+    ])
+    const priceCol  = findCol([
+      'Price','price','Close','close','Last','Last Price','Son Qiymət',
+      'Current Price','Market Price','Qiymət',
+    ])
+    const rsiCol    = findCol([
+      'RSI','rsi','RSI (14)','RSI(14)','Relative Strength Index (14d)',
+      'Relative Strength Index','RSI 14',
+    ])
+    const sma50Col  = findCol([
+      'SMA50','SMA 50','SMA(50)','sma50','50 SMA','MA50','MA 50',
+      '50-Day SMA','50d SMA','EMA50',
+    ])
+    const sma200Col = findCol([
+      'SMA200','SMA 200','SMA(200)','sma200','200 SMA','MA200','MA 200',
+      '200-Day SMA','200d SMA','EMA200',
+    ])
+    const volumeCol = findCol(['Volume','volume','Vol','vol'])
+
+    // Ticker tapılmasa — ilk sütunu götür
+    const effectiveTickerCol = tickerCol ?? rawHeaders[0]
+    // Qiymət tapılmasa — ilk rəqəmli sütunu tap
+    const effectivePriceCol  = priceCol ?? rawHeaders.find(h => {
+      const v = toNum(rows[0]?.[h] ?? '')
+      return !isNaN(v) && v > 0
+    })
+
+    if (!effectiveTickerCol) {
+      return Response.json({ error: 'CSV sütunları oxunmadı' }, { status: 422 })
     }
 
     const scored = rows.map(row => {
-      const ticker = getVal(row, tickerCol).trim().replace(/"/g,'')
-      const rawPrice = getVal(row, priceCol).replace(/[,$\s]/g,'')
-      const price  = priceCol ? parseFloat(rawPrice) : 0
-      const rsi    = rsiCol   ? parseFloat(getVal(row, rsiCol))    : 50
-      const sma50  = sma50Col ? parseFloat(getVal(row, sma50Col))  : price
-      const sma200 = sma200Col? parseFloat(getVal(row, sma200Col)) : price
-      const vol    = volumeCol? parseFloat(getVal(row, volumeCol)) : 1
+      const ticker = getVal(row, effectiveTickerCol).replace(/"/g,'').replace(/﻿/g,'')
+      const price  = effectivePriceCol ? toNum(getVal(row, effectivePriceCol)) : 0
+      const rsi    = rsiCol    ? toNum(getVal(row, rsiCol))    : 50
+      const sma50  = sma50Col  ? toNum(getVal(row, sma50Col))  : price * 0.93
+      const sma200 = sma200Col ? toNum(getVal(row, sma200Col)) : price * 0.88
+      const vol    = volumeCol ? toNum(getVal(row, volumeCol)) : 1
+
       if (!ticker || isNaN(price) || price === 0) return null
 
       const swingScore = calcSwingScore({
-        price, sma20:sma50, sma50, sma200, rsi, macdHistogram:0, macdHistogramPrev:0,
-        volume: isNaN(vol) ? 1 : vol,
-        avgVolume20: isNaN(vol) ? 1 : vol,
+        price,
+        sma20: isNaN(sma50) ? price * 0.97 : sma50,
+        sma50: isNaN(sma50) ? price * 0.93 : sma50,
+        sma200: isNaN(sma200) ? price * 0.88 : sma200,
+        rsi: isNaN(rsi) ? 50 : rsi,
+        macdHistogram: 0, macdHistogramPrev: 0,
+        volume: isNaN(vol) || vol === 0 ? 1 : vol,
+        avgVolume20: isNaN(vol) || vol === 0 ? 1 : vol,
         yearHigh: price * 1.1,
         ohlcv90: [],
       })
       return { ticker, price, rsi, sma50, sma200, swingScore }
     }).filter(Boolean)
 
-    if (!scored.length) return Response.json({ error: 'CSV-dən heç bir ticker oxunmadı' }, { status: 422 })
+    if (!scored.length) {
+      return Response.json({
+        error: `Heç bir sətir oxunmadı. Başlıqlar: ${headers.slice(0,6).join(' | ')}. Ticker sütunu: "${effectiveTickerCol}", Qiymət sütunu: "${effectivePriceCol ?? 'tapılmadı'}"`,
+      }, { status: 422 })
+    }
 
     const isSingle = scored.length === 1
     const prompt = isSingle
