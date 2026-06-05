@@ -8,6 +8,7 @@ import PriceStrip      from '@/components/texniki/PriceStrip'
 import AnalysisReport  from '@/components/texniki/AnalysisReport'
 import { type EightLayerScore, type SwingScore } from '@/lib/calculations'
 import { KpiGridSkeleton } from '@/components/ui/Skeleton'
+import TradingViewChart   from '@/components/texniki/TradingViewChart'
 
 type QuoteSnap = { price:number; changePercentage:number; yearHigh:number; priceAvg50:number; priceAvg200:number }
 
@@ -202,6 +203,13 @@ export default function TexnikiPage() {
           <SectionHeader number="03" title="NƏTİCƏ" />
           {loading && !tickerResult && !reportText && <KpiGridSkeleton count={6} />}
 
+          {/* Tək ticker: TradingView chart */}
+          {tickerResult && (
+            <div className="mb-4">
+              <TradingViewChart ticker={tickerResult.ticker} height={460} />
+            </div>
+          )}
+
           {/* Tək ticker: ScoreCard + PriceStrip yan-yana */}
           {tickerResult && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
@@ -219,6 +227,13 @@ export default function TexnikiPage() {
                   target2={prices.target2}
                 />
               )}
+            </div>
+          )}
+
+          {/* Batch: TOP 1 ticker üçün chart */}
+          {batchResult && !tickerResult && batchResult.length > 0 && (
+            <div className="mb-4">
+              <TradingViewChart ticker={batchResult[0].ticker} height={400} />
             </div>
           )}
 
